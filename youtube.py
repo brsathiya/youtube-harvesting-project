@@ -1,498 +1,421 @@
 import streamlit as st
-import pandas as pd
-import googleapiclient.discovery
-from googleapiclient.discovery import build
-import pymongo
-from datetime import datetime
-import isodate 
-import pymysql
-from sqlalchemy import create_engine 
 from streamlit_option_menu import option_menu
+import pymongo
+import pymysql
+import sqlalchemy
+import mysql.connector
+from sqlalchemy import create_engine
+import pandas as pd
+import isodate
+import time
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
-#Mongodb python Connectivity
+API_KEY = 'AIzaSyC4BVGEwZn6zithfRRYshMhzmq6XgH2kns'
+youtube = build('youtube', 'v3', developerKey=API_KEY)
 
-client = pymongo.MongoClient('mongodb+srv://brsathiya:root@cluster0.ryric7j.mongodb.net/')
-mydb=client['youtubedata']  #database name
-information=mydb.youtubedetails #collection name 
+# MongoDB connection
+client = pymongo.MongoClient('mongodb://127.0.0.1:27017/')
+#client =pymongo.MongoClient('mongodb+srv://brsathiya:thaaranika%402015@cluster0.ryric7j.mongodb.net/?retryWrites=true&w=majority')
+db = client.MY_YOUTUBE_PROJECT
+collection = db.YOUTUBE_channel_data
 
-#Sql python connectivity
+# MySQL connection 
+connect = mysql.connector.connect(
+    host="127.0.0.1",
+    user="root",
+    password="root1234",
+    database="youtube_project_harvest"
+)
+mycursor = connect.cursor(buffered=True)
+engine = create_engine('mysql+pymysql://root:root1234@127.0.0.1/youtube_project_harvest?charset=utf8mb4', echo=False)
 
-#creating engine 
-engine=create_engine('mysql+pymysql://root:root1234@localhost/youtube',echo=False)
+# Putting Data into MongoDB
+def Mongo_Data(pd_youtube):
+    push_status = collection.insert_one(pd_youtube)
+    return push_status
 
-#cur.execute("create database youtube")
-myconnection=pymysql.connect(host="localhost",user='root',passwd='root1234',database='youtube')
-cur=myconnection.cursor()
+total_api_requests = 0
 
-with st.sidebar:
-    selected = option_menu(None, ["Home","Migrate into mongodb and MySql","SQL Queries"], 
-                           icons=["house-door-fill","cloud-upload","card-text"],
-                           default_index=0,
-                           orientation="vertical",
-                           styles={"nav-link": {"font-size": "20px", "text-align": "centre", "margin": "0px", 
-                                                "--hover-color": "#C80101"},
-                                   "icon": {"font-size": "20px"},
-                                   "container" : {"max-width": "5000px"},
-                                   "nav-link-selected": {"background-color": "red"}})
+# Function to make API 
+def make_api_request_with_rate_limit(channel_id, page_token=None):
+    global total_api_requests
 
-def api_connect():
-    api_srevice_name = 'youtube'
-    api_version = 'v3'
-    API_KEY ='AIzaSyBqvRLUIzHV19D1iBK_NjQsbzY8VU3dcWo'
-    youtube = googleapiclient.discovery.build(api_srevice_name,api_version,developerKey=API_KEY)
-    return youtube
-
-#Method 1 - Getting channel_details by youtube api
-
-def channeldata(youtube,channel_id):
-    finalchanneldata=[]
-    request= youtube.channels().list(
-        part='snippet,contentDetails,statistics',
-        id=channel_id
-     )
-    channel_data = request.execute()
-
-    for i in range(len(channel_data.items())):
-        finalinfo=dict(channel_id=channel_data['items'][0]['id'],
-                       channel_name=channel_data['items'][0]['snippet']['title'],
-                       channel_description=channel_data['items'][0]['snippet']['description'],
-                       channel_view=channel_data['items'][0]['statistics']['viewCount'],
-                       channel_subscriber=channel_data['items'][0]['statistics']['subscriberCount'],
-                       channel_playlistid=channel_data['items'][0]['contentDetails']['relatedPlaylists']['uploads'],
-                       channel_videocount=channel_data['items'][0]['statistics']['videoCount'])
-        finalchanneldata.append(finalinfo)
     
-    return finalchanneldata
+    if total_api_requests >= 10000:  
+        st.error("API rate limit exceeded. Please try again later.")
+        return None
 
-
-
-#Getting playlist id for to get playlist details from the youtube by using youtube api
-
-
-
-#Method 2 - Getting playlist_details by youtube api
-
-def playlist(youtube,channel_id):
-    playlist=[]
-    playlist_request = youtube.playlists().list(
-         part="snippet,contentDetails",
-         channelId=channel_id,
-        maxResults=50
+    # API request
+    api_request = youtube.channels().list(
+        part='snippet,contentDetails,statistics,status',
+        id=channel_id,
+        pageToken=page_token  
     )
-    playlist_response = playlist_request.execute()
-    
 
-    for i in range(len(playlist_response.items())):
-        play=dict(playlist_id=playlist_response['items'][0]['id'],
-                  channel_id=playlist_response['items'][0]['snippet']['channelId'],
-                  playlist_title=playlist_response['items'][0]['snippet']['localized']['title'],
-                  playlist_count=playlist_response['items'][0]['contentDetails']['itemCount'],
-                  playlist_publishedate=playlist_response['items'][0]['snippet']['publishedAt'])
-        playlist.append(play)
+    try:
+        
+        response = api_request.execute()
+        total_api_requests += 1
 
-    next_page_token=playlist_response.get('nextPageToken')
-    more_pages=True
-    while more_pages:
-        if next_page_token is None:
-            more_pages=False
+
+        remaining_requests = int(response.headers['X-RateLimit-Remaining'])
+
+        
+        if remaining_requests == 0:
+            reset_time = int(response.headers['X-RateLimit-Reset'])
+            sleep_time = reset_time - time.time()
+            if sleep_time > 0:
+                st.warning(f"Rate limit exceeded. Sleeping for {sleep_time} seconds.")
+                time.sleep(sleep_time)
+
+        return response
+    except HttpError as e:
+        if e.resp.status == 404:
+            return {"error": f"Channel not found for ID: {channel_id}"}
         else:
-            playlist_request = youtube.playlists().list(
+            return {"error": f"API Error: {e.resp.status}"}
+
+# Getting Channel name:
+def channel_names():
+    ch_name = []
+    for i in collection.find():
+        if 'data' in i and 'channel_name' in i['data']:
+            ch_name.append(i['data']['channel_name'])
+    return ch_name
+
+
+def get_channel_details(channelid):
+    ch_data = {}
+
+    try:
+        # Fetching channel information from the YouTube API
+        ch_response = youtube.channels().list(
+            part='snippet,contentDetails,statistics,status',
+            id=channelid
+        ).execute()
+
+        if 'items' in ch_response and ch_response['items']:
+            channel_data = ch_response['items'][0]
+            channelName = channel_data['snippet']['title']
+            ch_data[channelName] = {
+                "channel_id": channel_data['id'],
+                "channel_name": channel_data['snippet']['title'],
+                "Subscribers": channel_data['statistics']['subscriberCount'],
+                "video_count": channel_data['statistics']['videoCount'],
+                "channel_views": channel_data['statistics']['viewCount'],
+                "channel_description": channel_data["snippet"]["description"],
+                "channel_status": channel_data['status']['privacyStatus'],
+                "Playlist": {},
+                "Videos": {},
+                "Comments": {}
+            }
+
+            # Fetching playlists associated with the channel
+            playlist_Response = youtube.playlists().list(
                 part="snippet,contentDetails",
-                channelId=channel_id,
-                maxResults=50,
-                pageToken=next_page_token
-            )
-            playlist_response=playlist_request.execute()
-            for i in range(len(playlist_response.items())):
-                play=dict(playlist_id=playlist_response['items'][0]['id'],
-                          channel_id=playlist_response['items'][0]['snippet']['channelId'],
-                          playlist_count=playlist_response['items'][0]['contentDetails']['itemCount'],
-                          playlist_title=playlist_response['items'][0]['snippet']['localized']['title'],
-                          playlist_publishedate=playlist_response['items'][0]['snippet']['publishedAt'])
-                playlist.append(play)
-            next_page_token=playlist_response.get('nextPageToken')
-    return playlist
+                channelId=channelid,
+                maxResults=25
+            ).execute()
 
+            for playlist in playlist_Response['items']:
+                playlist_id = playlist['id']
+                ch_data[channelName]["Playlist"][playlist_id] = {
+                    "playlist_id": playlist_id,
+                    "channel_id": playlist['snippet']['channelId'],
+                    "playlist_title": playlist['snippet']['title'],
+                    "videos": []  # Initialize an empty list to store video IDs
+                }
 
-#Method 3 - Getting video_id by using youtube api
+            # Fetching videos for each playlist
+            for playlist_id in ch_data[channelName]["Playlist"]:
+                video_list = youtube.playlistItems().list(
+                    part="contentDetails",
+                    playlistId=playlist_id,
+                    maxResults=5
+                ).execute()
 
-def videoids_details(youtube,a):
-    video_ids=[]
-    request = youtube.playlistItems().list(
-            part="snippet,contentDetails",
-            playlistId=a,
-            maxResults=50
-    )
-    channel_playlist = request.execute()
-    
-    for i in range(len(channel_playlist.items())):
-        video_ids.append(channel_playlist['items'][0]['contentDetails']['videoId'])
-        
-    next_page_token=channel_playlist.get('nextPageToken')
-    more_pages=True
-    while more_pages:
-        if next_page_token is None:
-            more_pages=False
+                for video_item in video_list['items']:
+                    video_id = video_item['contentDetails']['videoId']
+                    ch_data[channelName]["Playlist"][playlist_id]["videos"].append(video_id)
+
+            # Fetching video details for each video
+            for playlist_id in ch_data[channelName]["Playlist"]:
+                for video_id in ch_data[channelName]["Playlist"][playlist_id]["videos"]:
+                    video_details = youtube.videos().list(
+                        part="snippet,contentDetails,statistics",
+                        id=video_id
+                    ).execute()
+
+                    if 'items' in video_details and video_details['items']:
+                        video_data = video_details['items'][0]
+                        vid_dict = {
+                            "video_id": video_id,
+                            "channel_id": channelid,
+                            "video_name": video_data['snippet']['title'],
+                            "video_description": video_data['snippet']['description'],
+                            "published_at": video_data['snippet']['publishedAt'].replace("T", "").replace("Z", ""),
+                            "view_count": video_data['statistics']['viewCount'],
+                            "like_count": video_data['statistics']['likeCount'],
+                            "channel_name": channelName,                            
+                             "comment_count": video_data['statistics']['commentCount'],
+                            "duration": isodate.parse_duration(video_data['contentDetails']['duration']).total_seconds(),
+                            "thumbnail": video_data['snippet']['thumbnails']['default']['url'],
+                            "caption_status": video_data['contentDetails']['caption'],
+                            "comments": []  # Initialize an empty list to store comment data
+                        }
+                        ch_data[channelName]["Videos"][video_id] = vid_dict
+
+                        # Fetching comments for each video
+                        comment_dict = youtube.commentThreads().list(
+                            part="snippet,replies",
+                            videoId=video_id,
+                            maxResults=15
+                        ).execute()
+
+                        for comment_item in comment_dict['items']:
+                            comment_id = comment_item['snippet']['topLevelComment']['id']
+                            com_dict = {
+                                "channel_id": channelid,
+                                "Video_id": video_id,
+                                "Comment_Id": comment_id,
+                                "Comment_Text": comment_item['snippet']['topLevelComment']['snippet']['textOriginal'],
+                                "Comment_Author": comment_item['snippet']['topLevelComment']['snippet']['authorDisplayName'],
+                                "Comment_PublishedAt": comment_item['snippet']['topLevelComment']['snippet']['publishedAt'].replace("T", " ").replace("Z", "")
+                            }
+                            ch_data[channelName]["Videos"][video_id]["comments"].append(com_dict)
+
+    except HttpError as e:
+        if e.resp.status == 404:
+            return {"error": f"Channel not found for ID: {channelid}"}
         else:
-            request = youtube.playlistItems().list(
-                       part="snippet,contentDetails",
-                       playlistId=a,
-                       maxResults=50,
-                       pageToken=next_page_token
-            )
-            channel_playlist = request.execute()
-            for i in range(len(channel_playlist.items())):
-                video_ids.append(channel_playlist['items'][0]['contentDetails']['videoId'])
+            return {"error": f"API Error: {e.resp.status}"}
 
-            next_page_token=channel_playlist.get('nextPageToken')
-    return  video_ids
+    return {"Channel_Name": ch_data[channelName]['channel_name'], 'data': ch_data[channelName]}
 
-#videoids
 
-#Method 4- Getting video_details by youtube api
 
-def videodetails(youtube,videoids):
-    all_video_stats=[]
-    for i in range(0,len(videoids),50):
-        video_request = youtube.videos().list(
-                part='snippet,statistics,contentDetails',
-                id=','.join(videoids[i:i+50])
-              )
+
+# migrate data to SQL
+def migrate_to_sql(channel_name):
+    channel_data = collection.find({"Channel_Name": channel_name})[0]
+
+    # Migrate channel data to MySQL
+    channel_df = pd.DataFrame([[channel_data["data"]["channel_name"], channel_data["data"]["channel_id"],
+                                channel_data["data"]["channel_views"], channel_data["data"]["channel_description"],
+                                channel_data["data"]["video_count"], channel_data["data"]["channel_status"]]],
+                              columns=["Channel_Name", "Channel_Id", "Channel_Views", "Channel_Description",
+                                       "Total_videos", "Channel_status"])
+
+    channel_df.to_sql('channel', engine, if_exists='append', index=False,
+                      dtype={"Channel_Name": sqlalchemy.types.VARCHAR(length=225),
+                             "Channel_Id": sqlalchemy.types.VARCHAR(length=225),
+                             "Channel_Views": sqlalchemy.types.BigInteger,
+                             "Channel_Description": sqlalchemy.types.TEXT})
+
+    # Migrate playlist data to MySQL
+    playlist_data = []
+    for key, val in channel_data["data"]["Playlist"].items():
+        playlist_data.append([key, val["channel_id"], val["playlist_title"]])
+
+    playlist_df = pd.DataFrame(playlist_data, columns=["Playlist_Id", "Channel_Id", "Playlist_name"])
+    playlist_df.to_sql('playlist', engine, if_exists='append', index=False,
+                       dtype={"Playlist_Id": sqlalchemy.types.VARCHAR(length=225),
+                              "Channel_Id": sqlalchemy.types.VARCHAR(length=225),
+                              "Playlist_name": sqlalchemy.types.VARCHAR(length=225)})
+
+    # Migrate video data to MySQL
+    video_data = []
+    for key, val in channel_data["data"]["Videos"].items():
+        video_data.append([key, val['channel_id'], val["video_name"], val["channel_name"], val["video_description"],
+                           val["published_at"], val["view_count"], val["like_count"], val["comment_count"],
+                           val["duration"], val["caption_status"]])
+
+    video_df = pd.DataFrame(video_data, columns=["video_id", "channel_id", "video_name", "channel_name",
+                                                 "video_description", 'published_date', 'view_count', 'like_count',
+                                                 'comment_count', 'duration', 'caption_status'])
+    video_df.to_sql('video', engine, if_exists='append', index=False,
+                    dtype={'video_id': sqlalchemy.types.VARCHAR(length=225),
+                           'channel_id': sqlalchemy.types.VARCHAR(length=225),
+                           'channel_name': sqlalchemy.types.VARCHAR(length=225),
+                           'video_name': sqlalchemy.types.VARCHAR(length=225),
+                           'video_description': sqlalchemy.types.TEXT,
+                           'published_date': sqlalchemy.types.String(length=50),
+                           'view_count': sqlalchemy.types.BigInteger,
+                           'like_count': sqlalchemy.types.BigInteger,
+                            'comment_count': sqlalchemy.types.Integer,
+                           'duration': sqlalchemy.types.VARCHAR(length=1024),
+                           'caption_status': sqlalchemy.types.VARCHAR(length=225)})
+
+    # Migrate comment data to MySQL
+    comment_data = []
+    for key, val in channel_data["data"]["Comments"].items():
+        comment_data.append([val["Video_id"], key, val["Comment_Text"], val["Comment_Author"],
+                             val["Comment_PublishedAt"]])
+
+    comment_df = pd.DataFrame(comment_data, columns=['Video_id', 'Comment_Id', 'Comment_Text', 'Comment_Author',
+                                                     'Comment_Published_date'])
+    comment_df.to_sql('comments', engine, if_exists='append', index=False,
+                      dtype={'Video_Id': sqlalchemy.types.VARCHAR(length=225),
+                             'Comment_Id': sqlalchemy.types.VARCHAR(length=225),
+                             'Comment_Text': sqlalchemy.types.TEXT,
+                             'Comment_Author': sqlalchemy.types.VARCHAR(length=225),
+                             'Comment_Published_date': sqlalchemy.types.String(length=50)})
+
+    return 0
+
+#SLIDEBAR
+with st.sidebar:
+    selected = option_menu(None,
+                           options=["DATA EXTRACTION AND MIGRATION", "SQL QUERIES"],
+                           default_index=0)
+
+
+if selected == "DATA EXTRACTION AND MIGRATION":
+    st.title('YouTube Data Harvesting and Warehousing')
+    extract, transfer = st.tabs(["EXTRACT", "MIGRATE"])
+
+    with extract:
+        st.title("Enter the Channel IDs")
+        ch_id = st.text_input("Enter one or more YouTube Channel IDs separated by commas")
+        srch_btn = st.button("Search")
+        upld_button = st.button("Upload to MongoDB")
+
+        if ch_id and srch_btn:
+            channel_ids = [channel.strip() for channel in ch_id.split(',')]
+            for channel_id in channel_ids:
+                with st.spinner(f'Please wait while retrieving channel details for {channel_id}...'):
+                    retrieved_data = get_channel_details(channel_id)
+                    
+                    st.write(retrieved_data)
+
+        if upld_button:
+            # Split the input channel IDs 
+            channel_ids = [channel.strip() for channel in ch_id.split(',')]
+            for channel_id in channel_ids:
+                cursor = collection.find()
+                ds = [item["data"]["channel_id"] for item in cursor if "data" in item and "channel_id" in item["data"]]
+
+                # Check the channel IDs already exist in MongoDB
+                
+
+                if channel_id in ds:
+                    st.error(f"The channel with ID {channel_id} already exists in MongoDB.")
+                else:
+                    channel_info = get_channel_details(channel_id.strip())
+                    pushed_to_mongo = Mongo_Data(channel_info)
+                    if pushed_to_mongo.acknowledged:
+                        st.success(f'Data for Channel ID {channel_id.strip()} has been inserted into MongoDB!')
+                    else:
+                        st.error(f'Data for Channel ID {channel_id.strip()} was not inserted into MongoDB.')
+
+    with transfer:
+        st.title("Select a Channel to Transfer to MySQL")
+        ch_name = channel_names()
+        channel_name = st.selectbox("Select a channel", ch_name)
+        migrate_button = st.button("Migrate to MySQL")
+
+        if migrate_button:
+            # Check if the selected channel exists in MongoDB
+            cursor = collection.find({"data.channel_name": channel_name})
+            cursor_count = sum(1 for _ in cursor)
+            if cursor_count == 0:
+                st.error(f"Channel '{channel_name}' not found in MongoDB.")
+            else:
+                migrate_to_sql(channel_name)
+
+
+
+elif selected == "SQL QUERIES":
+    st.write("Select a question from the list below to provide insights:")
+    questions = st.selectbox(label='Questions', options=[
+        '1. What are the names of all the videos and their corresponding channels?',
+        '2. Which channels have the most number of videos, and how many videos do they have?',
+        '3. What are the top 10 most viewed videos and their respective channels?',
+        '4. How many comments were made on each video, and what are their corresponding video names?',
+        '5. Which videos have the highest number of likes, and what are their corresponding channel names?',
+        '6. What is the total number of likes and dislikes for each video, and what are their corresponding video names?',
+        '7. What is the total number of views for each channel, and what are their corresponding channel names?',
+        '8. What are the names of all the channels that have published videos in the year 2022?',
+        '9. What is the average duration of all videos in each channel, and what are their corresponding channel names?',
+        '10. Which videos have the highest number of comments, and what are their corresponding channel names?'])
+
+    if questions == '1. What are the names of all the videos and their corresponding channels?':
+        mycursor.execute("""SELECT video_name AS Video_Title, channel_name AS Channel_Name
+                            FROM video""")
+        df = pd.DataFrame(mycursor.fetchall(), columns=mycursor.column_names)
+        df.index += 1
+        st.write(df)
+    elif questions == '2. Which channels have the most number of videos, and how many videos do they have?':
+        mycursor.execute("""SELECT channel_name AS Channel_Name, COUNT(*) AS Total_Videos
+                            FROM video
+                            GROUP BY channel_name
+                            ORDER BY Total_Videos DESC""")
+        df = pd.DataFrame(mycursor.fetchall(), columns=mycursor.column_names)
+        df.index += 1
+        st.write(df)
+
+    elif questions == '3. What are the top 10 most viewed videos and their respective channels?':
+        mycursor.execute("""SELECT channel_name AS Channel_Name, video_name AS Video_Title, view_count AS Views 
+                            FROM video
+                            ORDER BY view_count DESC
+                            LIMIT 10""")
+        df = pd.DataFrame(mycursor.fetchall(), columns=mycursor.column_names)
+        df.index += 1
+        st.write(df)
+
+    elif questions == '4. How many comments were made on each video, and what are their corresponding video names?':
+        mycursor.execute("""SELECT video_name AS Video_Name, comment_count AS Total_Comments
+                            FROM video""")
+        df = pd.DataFrame(mycursor.fetchall(),columns=mycursor.column_names)
+        df.index+=1
+        st.write(df)
+
+    elif questions == '5. Which videos have the highest number of likes, and what are their corresponding channel names?':
+        mycursor.execute("""SELECT channel_name AS Channel_Name, video_name AS Video_Name, like_count AS Total_Likes
+                            FROM video
+                            ORDER BY like_count DESC""")
+        df = pd.DataFrame(mycursor.fetchall(),columns=mycursor.column_names)
+        df.index+=1
+        st.write(df)
+
+    elif questions == '6. What is the total number of likes and dislikes for each video, and what are their corresponding video names?':
+        mycursor.execute("""SELECT video_name AS Video_Name,like_count As Total_likes FROM video order by view_count ASC
+                            """)
+        df = pd.DataFrame(mycursor.fetchall(),columns=mycursor.column_names)
+        df.index+=1
+        st.write(df)
+
+    elif questions == '7. What is the total number of views for each channel, and what are their corresponding channel names?':
+        mycursor.execute("""SELECT channel_name AS Channel_Name, SUM(view_count) AS Total_Views
+                            FROM video
+                            GROUP BY channel_name""")
+        df = pd.DataFrame(mycursor.fetchall(),columns=mycursor.column_names)
+        df.index+=1
+        st.write(df)
+
+    elif questions == '8. What are the names of all the channels that have published videos in the year 2022?':
+        mycursor.execute("""SELECT DISTINCT channel_name AS Channel_Name
+                            FROM video
+                            WHERE YEAR(published_date) = 2022""")
+        df = pd.DataFrame(mycursor.fetchall(),columns=mycursor.column_names)
+        df.index+=1
+        st.write(df)
+
+    elif questions == '9. What is the average duration of all videos in each channel, and what are their corresponding channel names?':
+        mycursor.execute("""SELECT channel_name AS Channel_Name, AVG(duration) AS Average_Duration_In_Seconds
+                            FROM video
+                            GROUP BY channel_name""")
+        df = pd.DataFrame(mycursor.fetchall(),columns=mycursor.column_names)
+        df.index+=1
+        st.write(df)
+
+    elif questions == '10. Which videos have the highest number of comments, and what are their corresponding channel names?':
+        mycursor.execute("""SELECT channel_name AS Channel_Name, video_name AS Video_Name, comment_count AS Total_No_Of_Comments
+                            FROM video
+                            ORDER BY comment_count DESC""")
+        df = pd.DataFrame(mycursor.fetchall(),columns=mycursor.column_names)
+        df.index+=1
+        st.write(df)
         
-        video_response= video_request.execute()
-        
-        for i in range(len(video_response.items())):
-            video_stats=dict(video_id=video_response['items'][0]['id'],
-                             channel_name=video_response['items'][0]['snippet']['channelTitle'],
-                             video_title=video_response['items'][0]['snippet']['title'],
-                             video_description=video_response['items'][0]['snippet']['description'],
-                             video_published=video_response['items'][0]['snippet']['publishedAt'],
-                             video_viewcount=video_response['items'][0]['statistics']['viewCount'],
-                             video_likecount=video_response['items'][0]['statistics']['likeCount'],
-                             video_commentcount=video_response['items'][0]['statistics']['commentCount'],
-                             video_duration=video_response['items'][0]['contentDetails']['duration'],
-                             video_thumbnail=video_response['items'][0]['snippet']['thumbnails']['default']['url'],
-                             video_captionStatus=video_response['items'][0]['contentDetails']['caption']
-                            )
-                             
-                            
-            all_video_stats.append(video_stats)
-      
-    return all_video_stats
-
-#video_details
-
-#Method 5 - Get comment_details by youtube api
-
-def comments_details(youtube,video_id ):
-    all_comments = []
-    for video_id in video_id:
-        try:
-            comment_request = youtube.commentThreads().list(
-                      part="snippet",
-                      videoId=video_id,
-                      maxResults=5
-            )
-            comment_response = comment_request.execute()
-            for i in comment_response.items():
-                comment=dict(comment_id = comment_response['items'][0]['snippet']['topLevelComment']['id'],
-                             Video_id = comment_response['items'][0]['snippet']['videoId'],
-                             comment_text= comment_response['items'][0]['snippet']['topLevelComment']['snippet']['textOriginal'],
-                             comment_author = comment_response['items'][0]['snippet']['topLevelComment']['snippet']['authorDisplayName'], 
-                             comment_publishedAt =comment_response['items'][0]['snippet']['topLevelComment']['snippet']['publishedAt'] 
-                 )
-                all_comments.append(comment)
-    
-        except:
-            print('Could not get comments for video ' + video_id)
-    return all_comments
-
-#comment_details
-
-#Method 6 - Merging all data into one 
-
-def main(channel_id):
-    youtube = api_connect()
-    CD =  channeldata(youtube,channel_id) # Channel_details
-    playlist_details = playlist(youtube,channel_id) #playlist_details
-    videoids=videoids_details(youtube,CD[0]['channel_playlistid']) #videoids details
-    video_details = videodetails(youtube,videoids)  # get_video_details
-    comment_details = comments_details(youtube,videoids)  # get_comments_in_video
-
-    data = {"Channel_Details": CD,
-            "Playlist_Details": playlist_details,
-            "Video_Details": video_details,
-            "Comments_Details": comment_details}
-    return data
-
-
-#mycollection=mydb['youtubedetails']
-
-
-# HOME PAGE    
-if selected == "Home":
-    # Title Image  
-    st.title("DATA HARVESTING USING YOUTUBE API")
-    st.markdown("## To create youtube api check out this [link](https://www.youtube.com/watch?v=TE66McLMMEw)")
-    #st.image("title.png")
-    #col1,col2 = st.columns(2,gap= 'medium')
-    st.markdown("## :green[DOMAIN] : Youtube")
-    st.markdown("## :orange[Technologies used]: Python,MongoDB, Youtube Data API, MySql, Streamlit")
-    st.markdown("## :blue[Overview] : First we have to fetch the data from the youtube by using google youtube api. After fetching the data from the youtube we have to push the data into mongodb. Once we finished these steps then again we have to fetch the data from the mongodb and make it as a table format then insert into the MySql")
-                                                                                 
-
-#Get data and transform page
-
-if selected=="Migrate into mongodb and MySql":
-    st.title("Data harvesting")
-    channel_id=st.text_input('Enter your channelID')
-    if st.button('Get Data'):
-        with st.spinner('Processing....'):
-            st.write(main(channel_id))
-
-    mycollection=mydb['youtubedetails']
-    if st.button('Migrate to Mongodb'):
-        with st.spinner('Please Wait for while...'):
-            data=main(channel_id)
-            count=False
-            for i in mycollection.find():
-                if i['Channel_Details'][0]['channel_id']==channel_id:
-                    st.warning('channel already exist',icon="⚠️")
-                    count=True
-                    break
-
-            if count==False:
-                information.insert_one(data)
-                st.success('Migrate into mongodb',icon="✅")
-
-    
-    st.markdown('## Select  channel name to insert into MySql')
-
-
-    #Getting channel name from the mongodb
-    ch=[]
-    for i in information.find():
-        ch_details=i['Channel_Details'][0]['channel_name']
-        ch.append(ch_details)
-        
-    user_input=st.selectbox('select channel name',options=ch)
-    
-    channel_data=[]
-    channel_sql=[]
-    playlist_sql=[]
-    video_sql=[]
-    comment_sql=[]
-    
-    #append the channel details choose by the user 
-    for i in mycollection.find():
-        if i['Channel_Details'][0]['channel_name']==user_input:
-            channel_data.append(i)
-    if st.button('insert into sql'):
-        cur.execute ('select channel_name from channel_details')
-        channelnames=[i[0] for i in cur.fetchall()]
-        if user_input in channelnames:
-             st.warning('channel already inserted into MySql',icon="⚠️")
-        else:
-            with st.spinner('please wait for a while'):
-                    #Reterving channel data
-                    channel_details={'channel_name':channel_data['Channel_Details'][0]['channel_name'],
-                                     'channel_id':channel_data['Channel_Details'][0]['channel_id'],
-                                     'channel_description':channel_data['Channel_Details'][0]['channel_description'],
-                                     'channel_view':channel_data['Channel_Details'][0]['channel_view'],
-                                     'channel_subscriber':channel_data['Channel_Details'][0]['channel_subscriber'],
-                                     'channel_playlsitid':channel_data['Channel_Details'][0]['channel_playlistid'],
-                                     'channel_videocount':channel_data['Channel_Details'][0]['channel_videocount']}
-                    channel_sql.append(channel_details)
-
-                    #Reterving playlist data
-                    for j in channel_data[0]['Playlist_Details']:
-                         playlist_details={'playlist_id':j['playlist_id'],
-                                           'channel_id':j['channel_id'],
-                                           'playlist_count':j['playlist_count'],
-                                           'playlist_title':j['playlist_title'],
-                                           'playlist_publishedate':j['playlist_publishedate']}
-                         playlist_sql.append(playlist_details)
-
-                    #Reterving video data  
-                    for j in channel_data[0]['Video_Details']:
-                        video_details={'video_id':j['video_id'],
-                                       'channel_name':j['channel_name'],
-                                       'video_title':j['video_title'],
-                                       'video_description':j['video_description'],
-                                       'video_published':j['video_published'],
-                                       'video_viewcount':j['video_viewcount'],
-                                       'video_likecount':j['video_likecount'],
-                                       'video_commentcount':j['video_commentcount'],
-                                       'video_duration':j['video_duration'],
-                                       'video_thumbnail':j['video_thumbnail']}
-                        video_sql.append(video_details)
-                        
-                    #Reterving comment data
-                    for j in channel_data[0]['Comments_Details']:
-                        comment_details={'comment_id':j['comment_id'],
-                                         'video_id':j['Video_id'],
-                                         'comment_text':j['comment_text'],
-                                         'comment_author':j['comment_author'],
-                                         'comment_publishedAt':j['comment_publishedAt']}
-                        comment_sql.append(comment_details)
-
-
-                    #converting channel details into table
-                    channel_sql=pd.DataFrame(channel_sql)  #channel_sql to dataframe
-                    playlist_sql=pd.DataFrame(playlist_sql) #playlist_sql to dataframe
-                    video_sql=pd.DataFrame(video_sql) #video_sql to dataframe
-                    comment_sql=pd.DataFrame(comment_sql) #comment_swl to dataframe
-
-
-                    #1.converting datatypes in channel_details
-                    channel_sql['channel_view']=pd.to_numeric(channel_sql['channel_view'])
-                    channel_sql['channel_subscriber']=pd.to_numeric(channel_sql['channel_subscriber'])
-                    channel_sql['channel_videocount']=pd.to_numeric(channel_sql['channel_videocount'])
-
-                    #2.converting datatype in playlist_details:
-
-                    playlist_sql['playlist_count']=pd.to_numeric(playlist_sql['playlist_count'])
-                    playlist_sql['playlist_publishedate']=pd.to_datetime(playlist_sql['playlist_publishedate'])
-
-                    #3.converting datatype in video_details:
-
-                    video_sql['video_published']=pd.to_datetime(video_sql['video_published'])
-                    video_sql['video_viewcount']=pd.to_numeric(video_sql['video_viewcount'])
-                    video_sql['video_likecount']=pd.to_numeric(video_sql['video_likecount'])
-                    video_sql['video_commentcount']=pd.to_numeric(video_sql['video_commentcount'])
-
-                    for i in range(len(video_sql['video_duration'])):
-                        duration=isodate.parse_duration(video_sql['video_duration'].loc[i])
-                        seconds=duration.total_seconds()
-                        video_sql.loc[i,'video_duration']=int(seconds)
-
-                    video_sql['video_duration']=pd.to_numeric(video_sql['video_duration'])
-
-                    #4.converting datatype in comment_details:
-
-                    comment_sql['comment_publishedAt']=pd.to_datetime(comment_sql['comment_publishedAt'])
-
-                    #insert data into mysql
-
-                    channel_sql.to_sql('channel_details',engine,if_exists='append',index=False) #channel data into sql
-                    playlist_sql.to_sql('playlist_details',engine,if_exists='append',index=False) #playlist data into sql
-                    video_sql.to_sql('video_details',engine,if_exists='append',index=False) #video data into sql
-                    comment_sql.to_sql('comment_details',engine,if_exists='append',index=False) #comment data into sql
-                    st.success('Successfully data push into MySql',icon="✅")
-
-# MYSQL Queries page
-
-if selected=='SQL Queries':
-    st.write("## :black[Question are given below choose one you will get the answers]")
-    question=['1. What are the names of all the videos and their corresponding channels?',
-              '2. Which channels have the most number of videos, and how many videos do they have?',
-              '3. What are the top 10 most viewed videos and their respective channels?',
-              '4. How many comments were made on each video, and what are their corresponding video names?',
-              '5. Which videos have the highest number of likes, and what are their corresponding channel names?',
-              '6. What is the total number of likes for each video, and what are their corresponding video names?',
-              '7. What is the total number of views for each channel, and what are their corresponding channel names?',
-              '8. What are the names of all the channels that have published videos in the year 2022?',
-              '9. What is the average duration of all videos in each channel, and what are their corresponding channel names?',
-              '10. Which videos have the highest number of comments, and what are their corresponding channel names?']
-    questions=st.selectbox('Select questions',question)
-    
-    
-    #1 question 
-    if questions=='1. What are the names of all the videos and their corresponding channels?':
-        if st.button('Get solution'):
-            cur.execute("select video_title,channel_name from video_details")
-            df=[i for i in cur.fetchall()]
-            st.dataframe(pd.DataFrame(df,columns=['video_title','channel_name'],index=range(1, len(df) + 1)))
-            st.success("DONE", icon="✅")
-
-
-    #2 question
-    elif questions=='2. Which channels have the most number of videos, and how many videos do they have?':
-        if st.button('Get solution'):
-            cur.execute("select channel_name,channel_videocount from channel_details order by channel_videocount desc")
-            df=[i for i in cur.fetchall()]
-            st.dataframe(pd.DataFrame(df,columns=['channel_name','videocount'],index=range(1,len(df)+1)))
-            st.success("DONE", icon="✅")
-
-
-    #3 question
-    elif questions=='3. What are the top 10 most viewed videos and their respective channels?':
-        if st.button('Get solution'):
-            cur.execute("select channel_name,video_viewcount from video_details order by video_viewcount desc limit 10")
-            df=[i for i in cur.fetchall()]
-            st.dataframe(pd.DataFrame(df,columns=['channel_name','video_viewcount'],index=range(1,len(df)+1)))
-            st.success("DONE", icon="✅")
-            
-
-    #4 question
-    elif questions=='4. How many comments were made on each video, and what are their corresponding video names?':
-        if st.button('Get solution'):
-            cur.execute("select video_title,video_commentcount from video_details order by video_viewcount desc")
-            df=[i for i in cur.fetchall()]
-            st.dataframe(pd.DataFrame(df,columns=['video_name','video_commentcount'],index=range(1,len(df)+1)))
-            st.success("DONE", icon="✅")
-    
-    #5 question
-    elif questions=='5. Which videos have the highest number of likes, and what are their corresponding channel names?':
-        if st.button('Get solution'):
-            cur.execute("select channel_name,video_likecount from video_details order by video_likecount desc limit 10")
-            df=[i for i in cur.fetchall()]
-            st.dataframe(pd.DataFrame(df,columns=['channel_name','video_likecount'],index=range(1,len(df)+1)))
-            st.success("DONE", icon="✅")
-
-
-    #6 question
-    elif questions=='6. What is the total number of likes for each video, and what are their corresponding video names?':
-        if st.button('Get solution'):
-            cur.execute("select video_title as video_name, video_likecount as Like_count from video_details;")
-            df=[i for i in cur.fetchall()]
-            st.dataframe(pd.DataFrame(df,columns=['video_name','likecount'],index=range(1,len(df)+1)))
-            st.success("DONE", icon="✅")
-
-
-    #7 question
-    elif  questions=='7. What is the total number of views for each channel, and what are their corresponding channel names?':
-        if st.button('Get solution'):
-            cur.execute("select channel_name,channel_view from channel_details order by channel_view desc")
-            df=[i for i in cur.fetchall()]
-            st.dataframe(pd.DataFrame(df,columns=['channel_name','channel_view'],index=range(1,len(df)+1)))
-            st.success("DONE", icon="✅")
-
-
-    #8 question
-    elif questions=='8. What are the names of all the channels that have published videos in the year 2022?':
-        if st.button('Get solution'):
-            cur.execute("select distinct(channel_name) from video_details where year(video_published)=2022 order by channel_name")
-            df=[i for i in cur.fetchall()]
-            st.dataframe(pd.DataFrame(df,columns=['channel_name'],index=range(1,len(df)+1)))
-            st.success("DONE", icon="✅")
-
-    
-    #9 question
-    elif questions=='9. What is the average duration of all videos in each channel, and what are their corresponding channel names?':
-        if st.button('Get solution'):
-            cur.execute("select channel_name,avg(video_duration) as vd from video_details group by(channel_name) order by vd desc")
-            df=[i for i in cur.fetchall()]
-            st.dataframe(pd.DataFrame(df,columns=['channel_name','average_duration'],index=range(1,len(df)+1)))
-            st.success("DONE", icon="✅")
-
-    
-    #10 question
-    elif questions=='10. Which videos have the highest number of comments, and what are their corresponding channel names?':
-        if st.button('Get solution'):
-            cur.execute("select channel_name,video_commentcount from video_details order by video_commentcount desc limit 100")
-            df=[i for i in cur.fetchall()]
-            st.dataframe(pd.DataFrame(df,columns=['channel_name','video_commentcount'],index=range(1,len(df)+1)))
-            st.success("DONE", icon="✅")
-
-    
-
-
-
-
-
-    
-            
- 
-
 
