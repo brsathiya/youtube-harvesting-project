@@ -16,7 +16,6 @@ youtube = build('youtube', 'v3', developerKey=API_KEY)
 
 # MongoDB connection
 client = pymongo.MongoClient('mongodb://127.0.0.1:27017/')
-#client =pymongo.MongoClient('mongodb+srv://brsathiya:thaaranika%402015@cluster0.ryric7j.mongodb.net/?retryWrites=true&w=majority')
 db = client.MY_YOUTUBE_PROJECT
 collection = db.YOUTUBE_channel_data
 
