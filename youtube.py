@@ -396,7 +396,7 @@ elif selected == "SQL QUERIES":
     elif questions == '8. What are the names of all the channels that have published videos in the year 2022?':
         mycursor.execute("""SELECT DISTINCT channel_name AS Channel_Name
                             FROM video
-                            WHERE YEAR(published_date) = 2022""")
+                            WHERE published_date = 2022""")
         df = pd.DataFrame(mycursor.fetchall(),columns=mycursor.column_names)
         df.index+=1
         st.write(df)
